@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>City Smash Sandbox</title>
+
+<style>
+body {
+  margin: 0;
+  overflow: hidden;
+  background: black;
+}
+
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+#crosshair::before,
+#crosshair::after {
+  content: "";
+  position: absolute;
+  background: white;
+}
+
+#crosshair::before {
+  width: 2px;
+  height: 18px;
+  left: 8px;
+}
+
+#crosshair::after {
+  width: 18px;
+  height: 2px;
+  top: 8px;
+}
+</style>
+</head>
+
+<body>
+<div id="crosshair"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+
+<script>
+/* =====================
+   CORE
+===================== */
+let scene, camera, renderer;
+let player;
+let buildings = [];
+let keys = {};
+
+let yaw = 0;
+let pitch = 0;
+let velY = 0;
+let canJump = true;
+
+/* =====================
+   HAMMER
+===================== */
+let hammerHolder, hammerModel;
+let swingT = 0;
+let swinging = false;
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87ceeb);
+
+  camera = new THREE.PerspectiveCamera(
+    75,
+    innerWidth / innerHeight,
+    0.1,
+    1000
+  );
+
+  player = new THREE.Object3D();
+  player.position.set(0, 2, 5);
+  player.add(camera);
+  scene.add(player);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // Lighting
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+  sun.position.set(50, 100, 50);
+  scene.add(sun);
+
+  // Ground
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(1000, 1000),
+    new THREE.MeshStandardMaterial({ color: 0x555555 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  generateCity();
+  createHammer();
+
+  document.body.addEventListener("click", () => {
+    document.body.requestPointerLock();
+    startSwing();
+  });
+
+  document.addEventListener("mousemove", look);
+  window.addEventListener("keydown", e => keys[e.code] = true);
+  window.addEventListener("keyup", e => keys[e.code] = false);
+  window.addEventListener("resize", onResize);
+}
+
+/* =====================
+   CITY
+===================== */
+function generateCity() {
+  const spacing = 9;
+
+  for (let x = -45; x <= 45; x += spacing) {
+    for (let z = -45; z <= 45; z += spacing) {
+      const h = Math.random() * 10 + 4;
+
+      const b = new THREE.Mesh(
+        new THREE.BoxGeometry(3, h, 3),
+        new THREE.MeshStandardMaterial({ color: 0x888888 })
+      );
+
+      b.position.set(x, h / 2, z);
+      b.userData.vel = new THREE.Vector3();
+      buildings.push(b);
+      scene.add(b);
+    }
+  }
+}
+
+/* =====================
+   HAMMER (POLISHED)
+===================== */
+function createHammer() {
+  hammerHolder = new THREE.Object3D();
+
+  // FPS melee position (slightly downward rest)
+  hammerHolder.position.set(0.5, 0.05, -0.6);
+  hammerHolder.rotation.x = -0.2; // 🔑 rest tilt downward
+  camera.add(hammerHolder);
+
+  hammerModel = new THREE.Group();
+
+  // Handle
+  const handle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 1.2, 8),
+    new THREE.MeshStandardMaterial({ color: 0x4b2e1e })
+  );
+  handle.position.y = -0.6;
+  hammerModel.add(handle);
+
+  // Head
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.45, 0.25, 0.25),
+    new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
+  );
+
+  // 🔑 Rotate head so SHORT END faces forward
+  head.rotation.y = Math.PI / 2;
+  head.position.y = 0.15;
+  hammerModel.add(head);
+
+  hammerHolder.add(hammerModel);
+}
+
+/* =====================
+   LOOK + MOVE
+===================== */
+function look(e) {
+  if (document.pointerLockElement !== document.body) return;
+
+  yaw -= e.movementX * 0.002;
+  pitch -= e.movementY * 0.002;
+  pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+
+  player.rotation.y = yaw;
+  camera.rotation.x = pitch;
+}
+
+function move() {
+  const speed = 0.15;
+  const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+  const right = new THREE.Vector3(forward.z, 0, -forward.x);
+
+  if (keys.KeyW) player.position.addScaledVector(forward, -speed);
+  if (keys.KeyS) player.position.addScaledVector(forward, speed);
+  if (keys.KeyA) player.position.addScaledVector(right, -speed);
+  if (keys.KeyD) player.position.addScaledVector(right, speed);
+
+  velY -= 0.01;
+  player.position.y += velY;
+
+  if (player.position.y < 2) {
+    player.position.y = 2;
+    velY = 0;
+    canJump = true;
+  }
+
+  if (keys.Space && canJump) {
+    velY = 0.2;
+    canJump = false;
+  }
+}
+
+/* =====================
+   HAMMER SWING (STRONGER)
+===================== */
+function startSwing() {
+  if (swinging) return;
+  swinging = true;
+  swingT = 0;
+  smash();
+}
+
+function updateHammer() {
+  if (!swinging) return;
+
+  swingT += 0.12;
+
+  if (swingT < 1) {
+    // 🔑 bigger downward arc
+    hammerHolder.rotation.x =
+      -0.2 - Math.sin(swingT * Math.PI) * 1.6;
+  } else {
+    hammerHolder.rotation.x *= 0.85;
+    if (Math.abs(hammerHolder.rotation.x + 0.2) < 0.01) {
+      hammerHolder.rotation.x = -0.2;
+      swinging = false;
+    }
+  }
+}
+
+/* =====================
+   PHYSICS
+===================== */
+function smash() {
+  buildings.forEach(b => {
+    const d = b.position.distanceTo(player.position);
+    if (d < 7) {
+      const f = new THREE.Vector3()
+        .subVectors(b.position, player.position)
+        .normalize()
+        .multiplyScalar(1.2);
+      f.y += 0.6;
+      b.userData.vel.add(f);
+    }
+  });
+}
+
+function updateBuildings() {
+  buildings.forEach(b => {
+    b.userData.vel.y -= 0.02;
+    b.position.add(b.userData.vel);
+
+    const floor = b.geometry.parameters.height / 2;
+    if (b.position.y < floor) {
+      b.position.y = floor;
+      b.userData.vel.multiplyScalar(0.6);
+      b.userData.vel.y *= -0.3;
+    }
+  });
+}
+
+/* =====================
+   LOOP
+===================== */
+function animate() {
+  requestAnimationFrame(animate);
+  move();
+  updateHammer();
+  updateBuildings();
+  renderer.render(scene, camera);
+}
+
+function onResize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+</script>
+</body>
+</html>
